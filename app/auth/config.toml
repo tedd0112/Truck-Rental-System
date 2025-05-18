@@ -1,0 +1,6 @@
+[global.jwt]
+claims_namespace = "app_metadata"
+claims_map = { 
+  user_type = "user_type", 
+  is_admin = "is_admin" 
+}
