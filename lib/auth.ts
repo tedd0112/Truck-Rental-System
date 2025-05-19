@@ -1,10 +1,10 @@
 "use client"
 
-import type React from "react"
-import { createContext, useContext, useEffect, useState } from "react"
+import React, { createContext, useContext, useEffect, useState } from "react"
 import type { User, Session } from "@supabase/supabase-js"
 import { getSupabaseBrowserClient } from "./supabase"
 
+// Define the context type
 interface AuthContextType {
   user: User | null
   session: Session | null
@@ -16,20 +16,23 @@ interface AuthContextType {
   signOut: () => Promise<void>
 }
 
+// Create the context
 const AuthContext = createContext<AuthContextType | null>(null)
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+// Auth Provider component
+export function AuthProvider(props: { children: React.ReactNode }) {
+  // State
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
-  // Get the Supabase client
+  // Get Supabase client
   const supabase = getSupabaseBrowserClient()
 
+  // Initialize auth
   useEffect(() => {
-    // Get initial session
-    const initializeAuth = async () => {
+    async function initializeAuth() {
       try {
         const { data, error } = await supabase.auth.getSession()
 
@@ -50,7 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     initializeAuth()
 
-    // Listen for auth changes
+    // Auth state change listener
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -64,7 +67,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [supabase])
 
-  const signIn = async (email: string, password: string) => {
+  // Auth methods
+  async function signIn(email: string, password: string) {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) throw error
@@ -74,7 +78,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const signUp = async (email: string, password: string, userData: any) => {
+  async function signUp(email: string, password: string, userData: any) {
     try {
       const { error } = await supabase.auth.signUp({
         email,
@@ -90,7 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const signInWithGoogle = async () => {
+  async function signInWithGoogle() {
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
@@ -105,7 +109,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const signOut = async () => {
+  async function signOut() {
     try {
       const { error } = await supabase.auth.signOut()
       if (error) throw error
@@ -115,8 +119,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // Create the context value object
-  const contextValue: AuthContextType = {
+  // Create context value
+  const value = {
     user,
     session,
     loading,
@@ -128,9 +132,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   // Return the provider with children
-  return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>
+  return React.createElement(AuthContext.Provider, { value }, props.children)
 }
 
+// Auth hook
 export function useAuth() {
   const context = useContext(AuthContext)
   if (!context) {

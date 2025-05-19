@@ -1,125 +1,217 @@
--- Create profiles table to store additional user information
-CREATE TABLE IF NOT EXISTS profiles (
-  id UUID PRIMARY KEY REFERENCES auth.users(id),
-  first_name TEXT,
-  last_name TEXT,
-  email TEXT UNIQUE NOT NULL,
-  phone_number TEXT,
-  avatar_url TEXT,
-  user_type TEXT NOT NULL CHECK (user_type IN ('passenger', 'driver')),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- USERS
+CREATE TABLE users (
+  user_id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(100) UNIQUE NOT NULL,
+  phone VARCHAR(20) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  user_type VARCHAR(20) NOT NULL CHECK (user_type IN ('passenger', 'driver')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create trucks table
-CREATE TABLE IF NOT EXISTS trucks (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL,
-  make TEXT NOT NULL,
-  model TEXT NOT NULL,
-  year INTEGER NOT NULL,
-  size TEXT NOT NULL,
-  capacity DECIMAL(10, 2) NOT NULL,
-  description TEXT,
-  daily_rate DECIMAL(10, 2) NOT NULL,
-  image_url TEXT,
-  location JSONB NOT NULL,
-  features TEXT[] NOT NULL,
-  availability BOOLEAN DEFAULT TRUE,
-  owner_id UUID REFERENCES auth.users(id) NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- PASSENGER PROFILES
+CREATE TABLE passenger_profiles (
+  passenger_id SERIAL PRIMARY KEY,
+  user_id INT UNIQUE NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  preferred_payment_method VARCHAR(50),
+  rating FLOAT DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create bookings table
-CREATE TABLE IF NOT EXISTS bookings (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  truck_id UUID REFERENCES trucks(id) NOT NULL,
-  user_id UUID REFERENCES auth.users(id) NOT NULL,
-  start_date TIMESTAMP WITH TIME ZONE NOT NULL,
-  end_date TIMESTAMP WITH TIME ZONE NOT NULL,
-  total_cost DECIMAL(10, 2) NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed', 'completed', 'cancelled')),
-  pickup_location JSONB NOT NULL,
-  dropoff_location JSONB NOT NULL,
-  payment_id TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- DRIVER PROFILES
+CREATE TABLE driver_profiles (
+  driver_id SERIAL PRIMARY KEY,
+  user_id INT UNIQUE NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  license_number VARCHAR(50) NOT NULL,
+  license_expiry DATE NOT NULL,
+  vehicle_type VARCHAR(50),
+  vehicle_capacity FLOAT,
+  rating FLOAT DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Enable Row Level Security
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE trucks ENABLE ROW LEVEL SECURITY;
+-- DRIVER LOCATIONS
+CREATE TABLE driver_locations (
+  driver_id INT PRIMARY KEY REFERENCES driver_profiles(driver_id) ON DELETE CASCADE,
+  latitude DECIMAL(10,6) NOT NULL,
+  longitude DECIMAL(10,6) NOT NULL,
+  is_available BOOLEAN DEFAULT true,
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- DRIVER EARNINGS
+CREATE TABLE driver_earnings (
+  earning_id SERIAL PRIMARY KEY,
+  driver_id INT NOT NULL REFERENCES driver_profiles(driver_id) ON DELETE CASCADE,
+  amount DECIMAL(10,2) NOT NULL,
+  source VARCHAR(100),
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- RIDE REQUESTS
+CREATE TABLE ride_requests (
+  request_id SERIAL PRIMARY KEY,
+  passenger_id INT NOT NULL REFERENCES passenger_profiles(passenger_id) ON DELETE CASCADE,
+  origin_lat DECIMAL(10,6) NOT NULL,
+  origin_lng DECIMAL(10,6) NOT NULL,
+  destination_lat DECIMAL(10,6) NOT NULL,
+  destination_lng DECIMAL(10,6) NOT NULL,
+  preferred_vehicle_type VARCHAR(50),
+  status VARCHAR(20) NOT NULL CHECK (status IN ('requested', 'matched', 'cancelled', 'completed')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- BOOKINGS
+CREATE TABLE bookings (
+  booking_id SERIAL PRIMARY KEY,
+  passenger_id INT NOT NULL REFERENCES passenger_profiles(passenger_id) ON DELETE CASCADE,
+  driver_id INT NOT NULL REFERENCES driver_profiles(driver_id) ON DELETE CASCADE,
+  start_time TIMESTAMP NOT NULL,
+  end_time TIMESTAMP NOT NULL,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('booked', 'cancelled', 'completed')),
+  total_cost DECIMAL(10,2) NOT NULL
+);
+
+-- PAYMENTS
+CREATE TABLE payments (
+  payment_id SERIAL PRIMARY KEY,
+  booking_id INT NOT NULL REFERENCES bookings(booking_id) ON DELETE CASCADE,
+  amount DECIMAL(10,2) NOT NULL,
+  payment_method VARCHAR(50) NOT NULL,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'success', 'failed')),
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- REVIEWS
+CREATE TABLE reviews (
+  review_id SERIAL PRIMARY KEY,
+  booking_id INT NOT NULL REFERENCES bookings(booking_id) ON DELETE CASCADE,
+  user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  comment TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NOTIFICATIONS
+CREATE TABLE notifications (
+  notification_id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  message TEXT NOT NULL,
+  seen BOOLEAN DEFAULT false,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- REFERRALS
+CREATE TABLE referrals (
+  referral_id SERIAL PRIMARY KEY,
+  referrer_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  referred_email VARCHAR(100) NOT NULL,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'joined', 'rewarded')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE VIEW public.user_profiles WITH (security_invoker=on) AS
+SELECT 
+  user_id,
+  name,
+  CASE 
+    WHEN (select auth.uid())::text::integer = user_id THEN email
+    ELSE regexp_replace(email, '(.).*@', '\1****@', 'g')
+  END AS email,
+  user_type,
+  created_at
+FROM public.users;
+
+-- Set permissions on the view
+GRANT SELECT ON public.user_profiles TO authenticated;
+
+
+
+
+-- Create read-only role for analytics
+CREATE ROLE analyst;
+GRANT USAGE ON SCHEMA public TO analyst;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
+
+-- Drivers can update their own location
+CREATE POLICY driver_location_update ON driver_locations
+  FOR UPDATE USING (
+    (SELECT auth.uid()::text::integer) = (SELECT user_id FROM driver_profiles WHERE driver_id = driver_locations.driver_id)
+  );
+
+-- Passengers can see available drivers nearby
+CREATE POLICY driver_location_select_available ON driver_locations
+  FOR SELECT USING (
+    is_available = true
+  );
+
+  CREATE POLICY "Passenger can select their bookings" ON bookings
+  FOR SELECT TO authenticated
+  USING (
+    (select auth.uid())::text::integer = (SELECT user_id FROM passenger_profiles WHERE passenger_id = bookings.passenger_id) OR
+    (select auth.uid())::text::integer = (SELECT user_id FROM driver_profiles WHERE driver_id = bookings.driver_id)
+  );
+
+CREATE POLICY "Passenger can insert their bookings" ON bookings
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    (select auth.uid())::text::integer = (SELECT user_id FROM passenger_profiles WHERE passenger_id = bookings.passenger_id)
+  );
+
+CREATE POLICY "Driver can update their bookings" ON bookings
+  FOR UPDATE TO authenticated
+  USING (
+    (select auth.uid())::text::integer = (SELECT user_id FROM driver_profiles WHERE driver_id = bookings.driver_id)
+  ) WITH CHECK (
+    passenger_id = bookings.passenger_id AND
+    driver_id = bookings.driver_id AND
+    start_time = bookings.start_time AND
+    end_time = bookings.end_time AND
+    total_cost = bookings.total_cost
+  );
+
+CREATE POLICY "Driver can delete their bookings" ON bookings
+  FOR DELETE TO authenticated
+  USING (
+    (select auth.uid())::text::integer = (SELECT user_id FROM driver_profiles WHERE driver_id = bookings.driver_id)
+  );
+
+  
+CREATE POLICY "Drivers can see only their own profile" ON driver_profiles
+  FOR SELECT USING ((select auth.uid())::text::integer = user_id);
+
+CREATE POLICY "Drivers can update only their own profile" ON driver_profiles
+  FOR UPDATE USING ((select auth.uid())::text::integer = user_id);
+
+CREATE POLICY "Admin can see all driver profiles" ON driver_profiles
+  FOR SELECT TO admin USING (true);
+
+CREATE POLICY "Passengers can see only their own profile" ON passenger_profiles
+  FOR SELECT USING ((select auth.uid())::text::integer = user_id);
+
+CREATE POLICY "Passengers can update only their own profile" ON passenger_profiles
+  FOR UPDATE USING ((select auth.uid())::text::integer = user_id);
+
+-- Users can only see their own account
+CREATE POLICY user_select_policy ON users
+  FOR SELECT USING ((auth.uid()::text)::integer = user_id);
+
+-- Users can update only their own account
+CREATE POLICY user_update_policy ON users
+  FOR UPDATE USING ((auth.uid()::text)::integer = user_id);
+
+-- Enable RLS on all tables
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE passenger_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driver_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driver_locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ride_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE referrals ENABLE ROW LEVEL SECURITY;
 
--- Profiles policies
-CREATE POLICY "Profiles are viewable by everyone" 
-ON profiles FOR SELECT USING (true);
-
-CREATE POLICY "Profiles can be inserted by the user" 
-ON profiles FOR INSERT WITH CHECK (auth.uid() = id);
-
-CREATE POLICY "Profiles can be updated by the user" 
-ON profiles FOR UPDATE USING (auth.uid() = id);
-
--- Trucks policies
-CREATE POLICY "Trucks are viewable by everyone" 
-ON trucks FOR SELECT USING (true);
-
-CREATE POLICY "Trucks can be inserted by authenticated users" 
-ON trucks FOR INSERT WITH CHECK (auth.uid() = owner_id);
-
-CREATE POLICY "Trucks can be updated by their owners" 
-ON trucks FOR UPDATE USING (auth.uid() = owner_id);
-
-CREATE POLICY "Trucks can be deleted by their owners" 
-ON trucks FOR DELETE USING (auth.uid() = owner_id);
-
--- Bookings policies
-CREATE POLICY "Bookings are viewable by the customer or truck owner" 
-ON bookings FOR SELECT USING (
-  auth.uid() = user_id OR 
-  auth.uid() IN (
-    SELECT owner_id FROM trucks WHERE id = truck_id
-  )
-);
-
-CREATE POLICY "Bookings can be inserted by authenticated users" 
-ON bookings FOR INSERT WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Bookings can be updated by the customer or truck owner" 
-ON bookings FOR UPDATE USING (
-  auth.uid() = user_id OR 
-  auth.uid() IN (
-    SELECT owner_id FROM trucks WHERE id = truck_id
-  )
-);
-
-CREATE POLICY "Bookings can be deleted by the customer" 
-ON bookings FOR DELETE USING (auth.uid() = user_id);
-
--- Create storage bucket for truck images
-INSERT INTO storage.buckets (id, name, public) VALUES ('truck-images', 'truck-images', true);
-
--- Allow public access to truck images
-CREATE POLICY "Truck images are publicly accessible"
-ON storage.objects FOR SELECT
-USING (bucket_id = 'truck-images');
-
--- Allow authenticated users to upload truck images
-CREATE POLICY "Users can upload truck images"
-ON storage.objects FOR INSERT
-WITH CHECK (bucket_id = 'truck-images' AND auth.uid() IS NOT NULL);
-
--- Allow users to update their own truck images
-CREATE POLICY "Users can update their own truck images"
-ON storage.objects FOR UPDATE
-USING (bucket_id = 'truck-images' AND auth.uid() = owner);
-
--- Allow users to delete their own truck images
-CREATE POLICY "Users can delete their own truck images"
-ON storage.objects FOR DELETE
-USING (bucket_id = 'truck-images' AND auth.uid() = owner);
 CREATE OR REPLACE FUNCTION calculate_dynamic_price(
   origin_lat DECIMAL,
   origin_lng DECIMAL,

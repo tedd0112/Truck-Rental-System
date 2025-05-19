@@ -1,18 +1,15 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { supabase } from "@/lib/supabase"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import { useToast } from "@/components/ui/use-toast"
-import { Truck, AlertCircle, Upload, Calendar, Check, X, Eye, EyeOff } from "lucide-react"
+import { Truck, AlertCircle, Calendar, Check, X, Eye, EyeOff } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
@@ -21,6 +18,10 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar"
 import { format } from "date-fns"
 import { cn } from "@/lib/utils"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { registerUser } from "../actions"
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
+
+const supabase = createClientComponentClient()
 
 // Comprehensive list of country codes with Zimbabwe included
 const countryCodes = [
@@ -248,8 +249,6 @@ export default function RegisterPage() {
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [userType, setUserType] = useState("passenger")
-  const [profilePicture, setProfilePicture] = useState<File | null>(null)
-  const [profilePicturePreview, setProfilePicturePreview] = useState<string | null>(null)
   const [licenseNumber, setLicenseNumber] = useState("")
   const [licenseExpiry, setLicenseExpiry] = useState<Date | undefined>(undefined)
   const [rememberMe, setRememberMe] = useState(false)
@@ -276,21 +275,6 @@ export default function RegisterPage() {
   // Get full phone number with country code
   const getFullPhoneNumber = () => {
     return `${countryCode}${phoneNumber.replace(/\D/g, "")}`
-  }
-
-  // Handle profile picture change
-  const handleProfilePictureChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0]
-      setProfilePicture(file)
-
-      // Create preview
-      const reader = new FileReader()
-      reader.onload = (event) => {
-        setProfilePicturePreview(event.target?.result as string)
-      }
-      reader.readAsDataURL(file)
-    }
   }
 
   // Calculate password strength
@@ -443,151 +427,45 @@ export default function RegisterPage() {
     setIsLoading(true)
 
     try {
-      // Upload profile picture if provided
-      let profilePictureUrl = null
-      if (profilePicture) {
-        try {
-          // Check if the bucket exists, if not create it
-          const { data: buckets } = await supabase.storage.listBuckets()
-          const bucketName = "profile-pictures"
-          const bucketExists = buckets?.some((bucket) => bucket.name === bucketName)
+      // Create a FormData object to send to the server
+      const formData = new FormData()
+      formData.append("email", email)
+      formData.append("password", password)
+      formData.append("firstName", firstName)
+      formData.append("lastName", lastName)
+      formData.append("userType", userType)
+      formData.append("phoneNumber", getFullPhoneNumber())
 
-          if (!bucketExists) {
-            console.log("Creating profile-pictures bucket...")
-            const { error: createBucketError } = await supabase.storage.createBucket(bucketName, {
-              public: true,
-              fileSizeLimit: 5242880, // 5MB
-            })
-
-            if (createBucketError) {
-              console.error("Error creating bucket:", createBucketError)
-              throw createBucketError
-            }
-          }
-
-          // Now upload the file
-          const fileExt = profilePicture.name.split(".").pop()
-          const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`
-
-          const { error: uploadError, data: uploadData } = await supabase.storage
-            .from(bucketName)
-            .upload(fileName, profilePicture)
-
-          if (!uploadError && uploadData) {
-            const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(fileName)
-            profilePictureUrl = urlData.publicUrl
-          } else if (uploadError) {
-            console.error("Error uploading profile picture:", uploadError)
-            throw uploadError
-          }
-        } catch (uploadError) {
-          console.error("Error handling profile picture:", uploadError)
-          // Show a toast notification but continue with registration
-          toast({
-            title: "Profile picture upload failed",
-            description: "We couldn't upload your profile picture, but you can add it later from your profile.",
-            variant: "destructive",
-          })
-          // Continue even if profile picture upload fails
+      if (userType === "driver") {
+        formData.append("licenseNumber", licenseNumber)
+        if (licenseExpiry) {
+          formData.append("licenseExpiry", licenseExpiry.toISOString())
         }
       }
 
-      // Get full phone number
-      const fullPhoneNumber = getFullPhoneNumber()
+      // Use the server action to register the user
+      const result = await registerUser(formData)
 
-      // Register the user with Supabase
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            first_name: firstName,
-            last_name: lastName,
-            phone: fullPhoneNumber,
-            user_type: userType,
-            avatar_url: profilePictureUrl,
-            ...(userType === "driver"
-              ? {
-                  license_number: licenseNumber,
-                  license_expiry: licenseExpiry?.toISOString(),
-                }
-              : {}),
-          },
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
-      })
-
-      if (signUpError) {
-        throw signUpError
+      if (result.error) {
+        setError(result.error)
+        return
       }
 
-      if (!data.user) {
-        throw new Error("Failed to create user")
-      }
-
-      console.log("User created successfully:", data.user.id)
-
-      // Create profile in the database
-      try {
-        // Check if profiles table exists
-        const { error: tableCheckError } = await supabase.from("profiles").select("id").limit(1)
-
-        // If table doesn't exist, we'll handle it in the redirect flow
-        if (!tableCheckError) {
-          const profileData = {
-            id: data.user.id,
-            email: email,
-            first_name: firstName,
-            last_name: lastName,
-            phone_number: fullPhoneNumber,
-            user_type: userType,
-            avatar_url: profilePictureUrl,
-            ...(userType === "driver"
-              ? {
-                  license_number: licenseNumber,
-                  license_expiry: licenseExpiry?.toISOString(),
-                }
-              : {}),
-          }
-
-          const { error: profileError } = await supabase.from("profiles").insert(profileData)
-
-          if (profileError && !profileError.message.includes("does not exist")) {
-            console.error("Error creating profile:", profileError)
-          } else {
-            console.log("Profile created successfully")
-          }
-        }
-      } catch (profileError) {
-        console.error("Error creating profile:", profileError)
-        // Continue even if profile creation fails - it will be handled in the redirect
-      }
-
-      toast({
-        title: "Registration successful",
-        description: "Your account has been created successfully. Please check your email for verification.",
-      })
-
-      // Sign in the user if remember me is checked
-      if (rememberMe) {
-        const { error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
+      if (result.success) {
+        toast({
+          title: "Registration successful",
+          description: result.message || "Your account has been created successfully.",
         })
 
-        if (signInError) {
-          console.error("Error signing in:", signInError)
-          router.push("/auth/login?registered=true")
-        } else {
-          // Redirect to auth/redirect which will handle the flow based on user type
+        if (result.redirect) {
           router.push("/auth/redirect")
+        } else {
+          router.push("/auth/login?registered=true")
         }
-      } else {
-        router.push("/auth/login?registered=true")
       }
     } catch (error: any) {
       console.error("Registration error:", error)
-      setError(error.message || "An unexpected error occurred")
+      setError(error.message || "An unexpected error occurred during registration. Please try again.")
     } finally {
       setIsLoading(false)
     }
@@ -596,6 +474,8 @@ export default function RegisterPage() {
   const handleGoogleSignIn = async () => {
     try {
       setIsLoading(true)
+      setError(null)
+
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -607,7 +487,10 @@ export default function RegisterPage() {
         },
       })
 
-      if (error) throw error
+      if (error) {
+        console.error("Google sign in error:", error)
+        throw new Error(error.message || "Failed to sign in with Google")
+      }
 
       // The user will be redirected to Google's authentication page
       // No need to navigate manually as Supabase handles the redirect
@@ -849,58 +732,7 @@ export default function RegisterPage() {
               </div>
             </div>
 
-            {/* Role-Specific Fields */}
-            {userType === "passenger" && (
-              <div>
-                <h3 className="text-lg font-medium mb-4">Passenger Profile (Optional)</h3>
-                <div className="space-y-2">
-                  <Label htmlFor="profilePicture">Profile Picture</Label>
-                  <div className="flex items-center gap-4">
-                    {profilePicturePreview ? (
-                      <div className="relative w-20 h-20 rounded-full overflow-hidden">
-                        <img
-                          src={profilePicturePreview || "/placeholder.svg"}
-                          alt="Profile preview"
-                          className="w-full h-full object-cover"
-                        />
-                        <button
-                          type="button"
-                          className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1"
-                          onClick={() => {
-                            setProfilePicture(null)
-                            setProfilePicturePreview(null)
-                          }}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center">
-                        <Upload className="h-6 w-6 text-muted-foreground" />
-                      </div>
-                    )}
-                    <div className="flex-1">
-                      <Input
-                        id="profilePicture"
-                        type="file"
-                        accept="image/*"
-                        onChange={handleProfilePictureChange}
-                        className="hidden"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => document.getElementById("profilePicture")?.click()}
-                      >
-                        Choose Image
-                      </Button>
-                      <p className="text-xs text-muted-foreground mt-1">JPG, PNG or GIF, max 5MB</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
+            {/* Driver-specific fields */}
             {userType === "driver" && (
               <div>
                 <h3 className="text-lg font-medium mb-4">Driver Information</h3>
@@ -956,51 +788,6 @@ export default function RegisterPage() {
                       <p className="text-sm text-red-500">{formErrors.licenseExpiry}</p>
                     )}
                   </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="driverProfilePicture">Profile Picture</Label>
-                    <div className="flex items-center gap-4">
-                      {profilePicturePreview ? (
-                        <div className="relative w-20 h-20 rounded-full overflow-hidden">
-                          <img
-                            src={profilePicturePreview || "/placeholder.svg"}
-                            alt="Profile preview"
-                            className="w-full h-full object-cover"
-                          />
-                          <button
-                            type="button"
-                            className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1"
-                            onClick={() => {
-                              setProfilePicture(null)
-                              setProfilePicturePreview(null)
-                            }}
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center">
-                          <Upload className="h-6 w-6 text-muted-foreground" />
-                        </div>
-                      )}
-                      <div className="flex-1">
-                        <Input
-                          id="driverProfilePicture"
-                          type="file"
-                          accept="image/*"
-                          onChange={handleProfilePictureChange}
-                          className="hidden"
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => document.getElementById("driverProfilePicture")?.click()}
-                        >
-                          Choose Image
-                        </Button>
-                        <p className="text-xs text-muted-foreground mt-1">JPG, PNG or GIF, max 5MB</p>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </div>
             )}
@@ -1042,31 +829,6 @@ export default function RegisterPage() {
 
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Creating account..." : "Create account"}
-              </Button>
-
-              <div className="flex items-center">
-                <Separator className="flex-1" />
-                <span className="mx-4 text-xs text-muted-foreground">OR</span>
-                <Separator className="flex-1" />
-              </div>
-
-              <Button variant="outline" className="w-full" onClick={handleGoogleSignIn} disabled={isLoading}>
-                <svg
-                  className="mr-2 h-4 w-4"
-                  aria-hidden="true"
-                  focusable="false"
-                  data-prefix="fab"
-                  data-icon="google"
-                  role="img"
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 488 512"
-                >
-                  <path
-                    fill="currentColor"
-                    d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 123 24.5 166.3 64.9l-67.5 64.9C258.5 52.6 94.3 116.6 94.3 256c0 86.5 69.1 156.6 153.7 156.6 98.2 0 135-70.4 140.8-106.9H248v-85.3h236.1c2.3 12.7 3.9 24.9 3.9 41.4z"
-                  ></path>
-                </svg>
-                Sign in with Google
               </Button>
             </div>
           </form>
